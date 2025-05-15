@@ -1,41 +1,54 @@
 package com.example.tracking.service;
 
-import com.example.tracking.model.TrackingNumber;
-import com.example.tracking.repository.TrackingNumberRepository;
+import com.example.tracking.model.TrackingRequest;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
+@Slf4j
 @Service
 public class TrackingNumberService {
+    private static final String ALPHANUMERIC = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    private static final int RANDOM_STRING_LENGTH = 6;
+    private static final int MAX_TRACKING_LENGTH = 16;
 
-    private final TrackingNumberRepository repository;
+    private final RedisTemplate<String, String> redisTemplate;
 
-    public TrackingNumberService(TrackingNumberRepository repository) {
-        this.repository = repository;
+    public TrackingNumberService(RedisTemplate<String, String> redisTemplate) {
+        this.redisTemplate = redisTemplate;
     }
 
-    public TrackingNumber generateTrackingNumber() {
-        String trackingNumber = generateUniqueTrackingNumber();
-        TrackingNumber entity = new TrackingNumber();
-        entity.setTrackingNumber(trackingNumber);
-        entity.setCreatedAt(LocalDateTime.now());
-        return repository.save(entity);
+    @Transactional
+    public String generateTrackingNumber(TrackingRequest request) {
+        long sequenceNumber = getNextSequence();
+        String countryPrefix = request.getOriginCountryId() + request.getDestinationCountryId();
+        String randomComponent = generateRandomString();
+        String sequenceComponent = String.format("%06d", sequenceNumber % 999999);
+
+        String baseNumber = countryPrefix + randomComponent + sequenceComponent;
+        String checksum = calculateChecksum(baseNumber);
+
+        String trackingNumber = (baseNumber + checksum).substring(0, Math.min(MAX_TRACKING_LENGTH, (baseNumber + checksum).length()));
+
+        log.info("Generated tracking number: {}", trackingNumber);
+        return trackingNumber;
     }
 
-    private String generateUniqueTrackingNumber() {
-        while (true) {
-            // Generate a random alphanumeric tracking number of 16 characters
-            String candidate = UUID.randomUUID().toString().replace("-", "").toUpperCase()
-                                   .substring(0, ThreadLocalRandom.current().nextInt(10, 16));
-            // Use a repository method to check for uniqueness
-            if (!repository.existsByTrackingNumber(candidate)) {
-                return candidate; // Return the unique tracking number
-            }
-        }
+    private long getNextSequence() {
+        String sequenceKey = "tracking:sequence";
+        return redisTemplate.opsForValue().increment(sequenceKey, 1);
     }
 
+    private String generateRandomString() {
+        return RandomStringUtils.random(RANDOM_STRING_LENGTH, ALPHANUMERIC);
+    }
 
+    private String calculateChecksum(String input) {
+        int sum = input.chars().sum();
+        return String.valueOf(sum % 10);
+    }
 }
